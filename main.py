@@ -23,11 +23,22 @@ def main():
     args = parser.parse_args()
     check_rootfolders()
 
-    categories, args.train_list, args.val_list, args.root_path, prefix = datasets_video.return_dataset(args.dataset, args.modality)
-    num_class = len(categories)
+    if args.dataset == 'ucf101':
+        num_class = 101
+        args.train_list = 'video_datasets/ucf101/ucf101_rgb_train_split_1.txt'
+        args.val_list = 'video_datasets/ucf101/ucf101_rgb_val_split_1.txt'
+        args.root_path = '/'
+        prefix = 'image_{:05d}.jpg'
+    else:
+        categories, args.train_list, args.val_list, args.root_path, prefix = \
+            datasets_video.return_dataset(args.dataset, args.modality)
+        num_class = len(categories)
 
 
-    args.store_name = '_'.join(['TRN', args.dataset, args.modality, args.arch, args.consensus_type, 'segment%d'% args.num_segments])
+    # args.store_name = '_'.join(['TRN', args.dataset, args.modality, 
+        # args.arch, args.consensus_type, 'segment%d'% args.num_segments])
+    # args.val_name = '_'.join(['val_TRN', args.dataset, args.modality, 
+        # args.arch, args.consensus_type, 'segment%d'% args.num_segments])
     print('storing name: ' + args.store_name)
 
     model = TSN(num_class, args.num_segments, args.modality,
@@ -35,7 +46,14 @@ def main():
                 consensus_type=args.consensus_type,
                 dropout=args.dropout,
                 img_feature_dim=args.img_feature_dim,
-                partial_bn=not args.no_partialbn)
+                partial_bn=not args.no_partialbn, 
+                bi_add_clf=args.bi_add_clf, 
+                bi_out_dims=args.bi_out_dims, 
+                bi_rank=args.bi_rank, 
+                bi_att_softmax=args.bi_att_softmax, 
+                bi_filter_size=args.bi_filter_size, 
+                bi_dropout=args.bi_dropout, 
+                dataset=args.dataset)
 
     crop_size = model.crop_size
     scale_size = model.scale_size
@@ -47,6 +65,7 @@ def main():
     model = torch.nn.DataParallel(model, device_ids=args.gpus).cuda()
 
     if args.resume:
+        args.resume = os.path.join(args.root_model, args.resume)
         if os.path.isfile(args.resume):
             print(("=> loading checkpoint '{}'".format(args.resume)))
             checkpoint = torch.load(args.resume)
@@ -71,32 +90,49 @@ def main():
     elif args.modality in ['Flow', 'RGBDiff']:
         data_length = 5
 
+    if args.train_reverse:
+        train_temp_transform = ReverseFrames(size=data_length*args.num_segments)
+    elif args.train_shuffle:
+        train_temp_transform = ShuffleFrames(size=data_length*args.num_segments)
+    else:
+        train_temp_transform = IdentityTransform()
     train_loader = torch.utils.data.DataLoader(
         TSNDataSet(args.root_path, args.train_list, num_segments=args.num_segments,
                    new_length=data_length,
                    modality=args.modality,
                    image_tmpl=prefix,
+                   temp_transform=train_temp_transform, 
                    transform=torchvision.transforms.Compose([
                        train_augmentation,
                        Stack(roll=(args.arch in ['BNInception','InceptionV3'])),
                        ToTorchFormatTensor(div=(args.arch not in ['BNInception','InceptionV3'])),
-                       normalize,
+                       normalize
                    ])),
         batch_size=args.batch_size, shuffle=True,
         num_workers=args.workers, pin_memory=True)
 
+    if args.val_reverse:
+        val_temp_transform = ReverseFrames(size=data_length*args.num_segments)
+        print('using reverse val')
+    elif args.val_shuffle:
+        val_temp_transform = ShuffleFrames(size=data_length*args.num_segments)
+        print('using shuffle val')
+    else:
+        val_temp_transform = IdentityTransform()
+        print('using normal val')
     val_loader = torch.utils.data.DataLoader(
         TSNDataSet(args.root_path, args.val_list, num_segments=args.num_segments,
                    new_length=data_length,
                    modality=args.modality,
                    image_tmpl=prefix,
                    random_shift=False,
+                   temp_transform=val_temp_transform, 
                    transform=torchvision.transforms.Compose([
                        GroupScale(int(scale_size)),
                        GroupCenterCrop(crop_size),
                        Stack(roll=(args.arch in ['BNInception','InceptionV3'])),
                        ToTorchFormatTensor(div=(args.arch not in ['BNInception','InceptionV3'])),
-                       normalize,
+                       normalize
                    ])),
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
@@ -116,11 +152,12 @@ def main():
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
 
+    log_val = open(os.path.join(args.root_log, '%s.csv' % args.val_name), 'a')
     if args.evaluate:
-        validate(val_loader, model, criterion, 0)
+        validate(val_loader, model, criterion, 0, log_val)
         return
 
-    log_training = open(os.path.join(args.root_log, '%s.csv' % args.store_name), 'w')
+    log_training = open(os.path.join(args.root_log, '%s.csv' % args.store_name), 'a')
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch, args.lr_steps)
 
@@ -129,7 +166,11 @@ def main():
 
         # evaluate on validation set
         if (epoch + 1) % args.eval_freq == 0 or epoch == args.epochs - 1:
-            prec1 = validate(val_loader, model, criterion, (epoch + 1) * len(train_loader), log_training)
+            # prec1 = validate(val_loader, model, criterion, 
+                    # (epoch + 1) * len(train_loader), log_training)
+            prec1 = validate(val_loader, model, criterion, 
+                    (epoch + 1) * len(train_loader), log_val)
+            
 
             # remember best prec@1 and save checkpoint
             is_best = prec1 > best_prec1
@@ -264,7 +305,9 @@ def validate(val_loader, model, criterion, iter, log):
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
     torch.save(state, '%s/%s_checkpoint.pth.tar' % (args.root_model, args.store_name))
     if is_best:
-        shutil.copyfile('%s/%s_checkpoint.pth.tar' % (args.root_model, args.store_name),'%s/%s_best.pth.tar' % (args.root_model, args.store_name))
+        shutil.copyfile('%s/%s_checkpoint.pth.tar' % 
+                (args.root_model, args.store_name),
+                '%s/%s_best.pth.tar' % (args.root_model, args.store_name))
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

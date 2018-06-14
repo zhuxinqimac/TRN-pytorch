@@ -6,6 +6,38 @@ import numbers
 import math
 import torch
 
+class ReverseFrames(object):
+    def __init__(self, size=None):
+        self.size = size
+
+    def __call__(self, frame_indices):
+        out = frame_indices[::-1]
+
+        # for index in out:
+            # if len(out) >= self.size:
+                # break
+            # out.append(index)
+
+        return out
+
+class ShuffleFrames(object):
+    def __init__(self, size=None):
+        self.size = size
+
+    def __call__(self, frame_indices):
+        out = np.random.permutation(frame_indices).tolist()
+
+        # for index in out:
+            # if len(out) >= self.size:
+                # break
+            # out.append(index)
+
+        return out
+
+class IdentityTransform(object):
+
+    def __call__(self, data):
+        return data
 
 class GroupRandomCrop(object):
     def __init__(self, size):

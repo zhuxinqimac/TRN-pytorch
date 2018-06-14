@@ -17,7 +17,8 @@ from torch.nn import functional as F
 # options
 parser = argparse.ArgumentParser(
     description="TRN testing on the full validation set")
-parser.add_argument('dataset', type=str, choices=['something','jester','moments','charades'])
+parser.add_argument('dataset', type=str, choices=['something','jester',\
+        'moments','charades', 'ucf101'])
 parser.add_argument('modality', type=str, choices=['RGB', 'Flow', 'RGBDiff'])
 parser.add_argument('weights', type=str)
 parser.add_argument('--arch', type=str, default="resnet101")
@@ -34,6 +35,11 @@ parser.add_argument('--gpus', nargs='+', type=int, default=None)
 parser.add_argument('--img_feature_dim',type=int, default=256)
 parser.add_argument('--num_set_segments',type=int, default=1,help='TODO: select multiply set of n-frames from a video')
 parser.add_argument('--softmax', type=int, default=0)
+# ==== Modified ====
+parser.add_argument('--test_reverse', default=False, action='store_true', 
+                            help='test with frames reversed')
+parser.add_argument('--test_shuffle', default=False, action='store_true', 
+                            help='test with frames shuffled')
 
 args = parser.parse_args()
 
@@ -68,9 +74,15 @@ def accuracy(output, target, topk=(1,)):
     return res
 
 
-
-categories, args.train_list, args.val_list, args.root_path, prefix = datasets_video.return_dataset(args.dataset, args.modality)
-num_class = len(categories)
+if args.dataset == 'ucf101':
+    num_class = 101
+    args.train_list = 'video_datasets/ucf101/ucf101_rgb_train_split_1.txt'
+    args.val_list = 'video_datasets/ucf101/ucf101_rgb_val_split_1.txt'
+    args.root_path = '/'
+    prefix = 'image_{:05d}.jpg'
+else:
+    categories, args.train_list, args.val_list, args.root_path, prefix = datasets_video.return_dataset(args.dataset, args.modality)
+    num_class = len(categories)
 
 net = TSN(num_class, args.test_segments if args.crop_fusion_type in ['TRN','TRNmultiscale'] else 1, args.modality,
           base_model=args.arch,
@@ -96,12 +108,20 @@ elif args.test_crops == 10:
 else:
     raise ValueError("Only 1 and 10 crops are supported while we got {}".format(args.test_crops))
 
+if args.test_reverse:
+    test_temp_transform = ReverseFrames()
+elif args.test_shuffle:
+    test_temp_transform = ShuffleFrames()
+else:
+    test_temp_transform = IdentityTransform()
+
 data_loader = torch.utils.data.DataLoader(
         TSNDataSet(args.root_path, args.val_list, num_segments=args.test_segments,
                    new_length=1 if args.modality == "RGB" else 5,
                    modality=args.modality,
                    image_tmpl=prefix,
                    test_mode=True,
+                   temp_transform=test_temp_transform, 
                    transform=torchvision.transforms.Compose([
                        cropping,
                        Stack(roll=(args.arch in ['BNInception','InceptionV3'])),

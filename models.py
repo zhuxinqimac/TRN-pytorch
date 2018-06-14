@@ -11,7 +11,10 @@ class TSN(nn.Module):
                  base_model='resnet101', new_length=None,
                  consensus_type='avg', before_softmax=True,
                  dropout=0.8,img_feature_dim=256,
-                 crop_num=1, partial_bn=True, print_spec=True):
+                 crop_num=1, partial_bn=True, print_spec=True, 
+                 bi_add_clf=False, bi_out_dims=101, 
+                 bi_rank=1, bi_att_softmax=False, bi_filter_size=1, 
+                 bi_dropout=0., dataset='ucf101'):
         super(TSN, self).__init__()
         self.modality = modality
         self.num_segments = num_segments
@@ -21,6 +24,15 @@ class TSN(nn.Module):
         self.crop_num = crop_num
         self.consensus_type = consensus_type
         self.img_feature_dim = img_feature_dim  # the dimension of the CNN feature to represent each frame
+
+        self.bi_out_dims = bi_out_dims
+        self.bi_filter_size = bi_filter_size
+        self.bi_add_clf = bi_add_clf
+        self.bi_rank = bi_rank
+        self.bi_att_softmax = bi_att_softmax
+        self.bi_dropout = bi_dropout
+        self.dataset = dataset
+
         if not before_softmax and consensus_type != 'avg':
             raise ValueError("Only avg consensus can be used after Softmax")
 
@@ -42,7 +54,12 @@ class TSN(nn.Module):
 
         self._prepare_base_model(base_model)
 
-        feature_dim = self._prepare_tsn(num_class)
+        if self.consensus_type == 'bilinear_att':
+            print('preparing bilinear_att')
+            self.feature_dim = self._prepare_bilinear_att(num_class)
+            self.late_fusion = False
+        else:
+            feature_dim = self._prepare_tsn(num_class)
 
         if self.modality == 'Flow':
             print("Converting the ImageNet model to a flow init model")
@@ -54,7 +71,17 @@ class TSN(nn.Module):
             print("Done. RGBDiff model ready.")
         if consensus_type in ['TRN', 'TRNmultiscale']:
             # plug in the Temporal Relation Network Module
-            self.consensus = TRNmodule.return_TRN(consensus_type, self.img_feature_dim, self.num_segments, num_class)
+            self.consensus = TRNmodule.return_TRN(consensus_type, 
+                    self.img_feature_dim, self.num_segments, num_class)
+        elif consensus_type == 'bilinear_att':
+            print('using bilinear_att consensus')
+            self.consensus = BilinearAttentionFusion(self.feature_dim, 
+                            self.bi_out_dims, 
+                            self.bi_filter_size, 
+                            self.num_segments, 
+                            self.bi_rank, 
+                            self.bi_att_softmax, 
+                            self.bi_dropout)
         else:
             self.consensus = ConsensusModule(consensus_type)
 
@@ -64,6 +91,24 @@ class TSN(nn.Module):
         self._enable_pbn = partial_bn
         if partial_bn:
             self.partialBN(True)
+
+    def _prepare_bilinear_att(self, num_class):
+        feature_dim = getattr(self.base_model.layer4[-1].bn2, 'num_features')
+        removed = list(self.base_model.children())[:-2]
+        self.base_model = nn.Sequential(*removed)
+        if self.dropout == 0:
+            self.new_classifier = nn.Linear(self.bi_out_dims, num_class)
+        else:
+            self.new_classifier = nn.Sequential(nn.Dropout(p=self.dropout), 
+                                    nn.Linear(self.bi_out_dims, num_class))
+        std = 0.001
+        if self.dropout == 0:
+            normal(self.new_classifier.weight, 0, std)
+            constant(self.new_classifier.bias, 0)
+        else:
+            normal(self.new_classifier[-1].weight, 0, std)
+            constant(self.new_classifier[-1].bias, 0)
+        return feature_dim
 
     def _prepare_tsn(self, num_class):
         feature_dim = getattr(self.base_model, self.base_model.last_layer_name).in_features
@@ -218,17 +263,30 @@ class TSN(nn.Module):
             input = self._get_diff(input)
 
         base_out = self.base_model(input.view((-1, sample_len) + input.size()[-2:]))
+        if self.consensus_type == 'bilinear_att':
+            output = self.bi_att_forward(base_out)
+        else:
+            if self.dropout > 0:
+                base_out = self.new_fc(base_out)
 
-        if self.dropout > 0:
-            base_out = self.new_fc(base_out)
+            if not self.before_softmax:
+                base_out = self.softmax(base_out)
+            if self.reshape:
+                base_out = base_out.view((-1, self.num_segments) + base_out.size()[1:])
 
-        if not self.before_softmax:
-            base_out = self.softmax(base_out)
-        if self.reshape:
-            base_out = base_out.view((-1, self.num_segments) + base_out.size()[1:])
-
-        output = self.consensus(base_out)
+            output = self.consensus(base_out)
+        # print(output.size())
+        # print('after squeeze: ', output.squeeze(1).size())
+        # input('...')
         return output.squeeze(1)
+
+    def bi_att_forward(self, base_out):
+        base_out = self.consensus(base_out)
+        if self.bi_add_clf:
+            output = self.new_classifier(base_out)
+        else:
+            output = base_out
+        return output
 
     def _get_diff(self, input, keep_rgb=False):
         input_c = 3 if self.modality in ["RGB", "RGBDiff"] else 2

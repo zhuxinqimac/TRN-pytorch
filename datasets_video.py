@@ -9,7 +9,8 @@ ROOT_DATASET= 'video_datasets'
 def return_something(modality):
     filename_categories = 'something/category.txt'
     if modality == 'RGB':
-        root_data = '/data/vision/oliva/scratch/bzhou/video/something-something/20bn-something-something-v1'
+        # root_data = '/data/vision/oliva/scratch/bzhou/video/something-something/20bn-something-something-v1'
+        root_data = '/home/xinqizhu/repo/TRN-pytorch/video_datasets/something/20bn-something-something-v1'
         filename_imglist_train = 'something/train_videofolder.txt'
         filename_imglist_val = 'something/val_videofolder.txt'
 

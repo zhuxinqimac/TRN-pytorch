@@ -1,11 +1,12 @@
 import argparse
 parser = argparse.ArgumentParser(description="PyTorch implementation of Temporal Segment Networks")
-parser.add_argument('dataset', type=str, choices=['something','jester','moments'])
+parser.add_argument('dataset', type=str, choices=['something','jester','moments', 'ucf101'])
 parser.add_argument('modality', type=str, choices=['RGB', 'Flow'])
 parser.add_argument('--train_list', type=str,default="")
 parser.add_argument('--val_list', type=str, default="")
 parser.add_argument('--root_path', type=str, default="")
 parser.add_argument('--store_name', type=str, default="")
+parser.add_argument('--val_name', type=str, default="")
 # ========================= Model Configs ==========================
 parser.add_argument('--arch', type=str, default="BNInception")
 parser.add_argument('--num_segments', type=int, default=3)
@@ -17,6 +18,35 @@ parser.add_argument('--dropout', '--do', default=0.8, type=float,
 parser.add_argument('--loss_type', type=str, default="nll",
                     choices=['nll'])
 parser.add_argument('--img_feature_dim', default=256, type=int, help="the feature dimension for each frame")
+
+# ====== Modified ======
+parser.add_argument('--lstm_out_type', type=str, help='lstm fusion type', 
+                    default='avg', choices=['last', 'max', 'avg'])
+parser.add_argument('--lstm_layers', type=int, help='lstm layers', 
+                    default=1)
+parser.add_argument('--lstm_hidden_dims', type=int, help='lstm hidden dims', 
+                    default=512)
+parser.add_argument('--conv_lstm_kernel', type=int, help='convlstm kernel size', 
+                    default=5)
+parser.add_argument('--train_reverse', default=False, action='store_true', 
+                    help='train with frames reversed')
+parser.add_argument('--train_shuffle', default=False, action='store_true', 
+                    help='train with frames shuffled')
+parser.add_argument('--val_reverse', default=False, action='store_true', 
+                    help='validate (test) with frames reversed')
+parser.add_argument('--val_shuffle', default=False, action='store_true', 
+                    help='validate (test) with frames shuffled')
+parser.add_argument('--bi_out_dims', type=int, help='bilinear out dims, should equal to num classes when bi_add_clf is false', 
+                    default=101)
+parser.add_argument('--bi_rank', type=int, default=1, 
+                    help='rank used to approximate bilinear pooling')
+parser.add_argument('--bi_att_softmax', default=False, action='store_true', 
+                    help='add softmax layer for bilinear attention maps')
+parser.add_argument('--bi_filter_size', type=int, default=1, 
+                    help='filter size used in bilinear pooling when generating attention maps')
+parser.add_argument('--bi_dropout', type=float, default=0, help='dropout used in bilinear pooling')
+parser.add_argument('--bi_add_clf', default=False, action='store_true', 
+                    help='add another classifier after bilinear fusion')
 
 # ========================= Learning Configs ==========================
 parser.add_argument('--epochs', default=120, type=int, metavar='N',
